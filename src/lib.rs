@@ -123,14 +123,13 @@ fn get_function_name<'a>(elf: &'a Elf, symbol: &'a goblin::elf::Sym) -> Option<&
         
     // Reference to the string in the string table
     let name_str: &'a str = elf.strtab.get_at(name_offset)?;
-    
-    // Return the string reference directly
+
     return Some(name_str);
 }
 
 fn syscall_tracing(binary_path: &str) -> Result<SyscallFeatures> {
 
-    let _output = Command::new("strace")
+    Command::new("strace")
     .arg("-o")
     .arg("./binaries/strace_output.txt")
     .arg(binary_path)
