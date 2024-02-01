@@ -1,10 +1,11 @@
 use goblin::elf::Elf;
 use std::fs::File;
 use std::process::Command;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::vec;
 use serde::Serialize;
 use std::collections::HashSet;
+use libc::c_int;
 
 mod error;
 use error::{Result, Error};
@@ -14,7 +15,7 @@ struct Manifest {
     architecture: String,
     stripped: bool,
     api_found: Option<Vec<String>>,
-    syscall_categories: Option<SyscallFeatures>,
+    syscall_features: Option<SyscallFeatures>,
 }
 
 #[derive(Debug, Serialize)]
@@ -26,10 +27,7 @@ struct SyscallFeatures {
 }
 
 pub fn elf_analysis(file_path: &str) -> Result<()> {
-    // Load the ELF file
     let elf_data = std::fs::read(file_path)?;
-
-    // Parse the ELF file
     let elf = Elf::parse(&elf_data)?;
 
     // Retrieve the architecture from the ELF header
@@ -47,7 +45,7 @@ pub fn elf_analysis(file_path: &str) -> Result<()> {
         architecture: architecture.to_string(),
         stripped,
         api_found: None,
-        syscall_categories: None,
+        syscall_features: None,
     };
 
     // If not stripped, search for APIs
@@ -56,8 +54,17 @@ pub fn elf_analysis(file_path: &str) -> Result<()> {
     }
 
     // Dynamic analysis with strace
-    let syscall_categories = syscall_tracing(file_path);
-    manifest.syscall_categories = Some(syscall_categories?);
+    let syscall_categories = syscall_tracing(file_path)?;
+    manifest.syscall_features = Some(syscall_categories);
+
+    // Static analysis with the mapping table
+    /*let mut file = File::open(&file_path)?;
+        // Leggi il contenuto del file ELF
+    let mut buffer = Vec::new();
+    file.read_to_end(&mut buffer)?;
+    let syscall_categories = syscall_mapping_table(&elf, elf_data.clone())?;
+    manifest.syscall_features = Some(syscall_categories);*/
+
 
     // Serialize the manifest to JSON and print it
     let manifest_json = serde_json::to_string_pretty(&manifest).unwrap();
@@ -186,7 +193,7 @@ fn categorize_syscall<'a>(syscall: &'a str) -> Option<(&'a str, &'a str)> {
     } else if syscall.contains("sendto") {
         Some(("network", "send_data"))
     } else if syscall.contains("ioctl") {
-        Some(("device", "I/O control"))
+        Some(("device", "I/O_control"))
     } else if syscall.contains("mmap") {
         Some(("memory", "access_memory"))
     } else {
@@ -194,3 +201,81 @@ fn categorize_syscall<'a>(syscall: &'a str) -> Option<(&'a str, &'a str)> {
     }
 }
 
+/*fn syscall_mapping_table(elf: &Elf, buffer: Vec<u8>) -> Result<SyscallFeatures> {
+
+    let mut syscall_categories = SyscallFeatures {
+        network: Some(HashSet::new()),
+        device: Some(HashSet::new()),
+        disk: Some(HashSet::new()),
+        memory: Some(HashSet::new()),
+    };
+    
+    // Trova la sezione delle chiamate di sistema
+    let syscalls_section = elf
+        .section_headers
+        .iter()
+        .find(|section| {
+            if let Some(name) = elf.shdr_strtab.get_at(section.sh_name) {
+                name == ".text"
+            } else {
+                false
+            }
+        })
+        .expect("Failed to find syscall section");
+
+     // Accedi ai dati della sezione delle chiamate di sistema
+    let syscalls_data = &buffer[syscalls_section.sh_offset as usize
+        ..(syscalls_section.sh_offset + syscalls_section.sh_size) as usize];
+
+    // Definisci una tabella di mapping tra numeri e nomi di chiamate di sistema
+    let syscall_names: Vec<(&str, c_int)> = vec![
+        ("sys_write", libc::SYS_write.try_into().unwrap()),
+        ("sys_sendto", libc::SYS_sendto.try_into().unwrap()),
+        ("sys_ioctl", libc::SYS_ioctl.try_into().unwrap()),
+        ("sys_recvfrom", libc::SYS_recvfrom.try_into().unwrap()),
+        ("sys_socket", libc::SYS_socket.try_into().unwrap()),
+        ("sys_connect", libc::SYS_connect.try_into().unwrap()),
+        ("sys_fsync", libc::SYS_fsync.try_into().unwrap()),
+        ("sys_mmap", libc::SYS_mmap.try_into().unwrap())
+        // Aggiungi altre chiamate di sistema secondo necessità
+    ];      
+
+    for syscall_entry in syscalls_data.chunks_exact(4) {
+        let syscall_number = u32::from_le_bytes([
+            syscall_entry[0],
+            syscall_entry[1],
+            syscall_entry[2],
+            syscall_entry[3],
+        ]);
+
+        // Cerca il nome della chiamata di sistema nella tabella
+        if let Some(syscall_name) = syscall_names.iter().find(|(_, num)| *num == syscall_number as c_int) {
+            // Popolare syscall_categories qui
+            match syscall_name.0 {
+                "sys_write" | "sys_fsync" => {
+                    if let Some(disk_category) = &mut syscall_categories.disk {
+                        disk_category.insert("access_disk".to_string());
+                    }
+                }
+                "sys_sendto" | "sys_recvfrom" | "sys_socket" | "sys_connect" => {
+                    if let Some(network_category) = &mut syscall_categories.network {
+                        network_category.insert(syscall_name.0.to_string());
+                    }
+                }
+                "I/sys_ioctl" => {
+                    if let Some(device_category) = &mut syscall_categories.device {
+                        device_category.insert("I/O_control".to_string());
+                    }
+                }
+                "sys_mmap" => {
+                    if let Some(memory_category) = &mut syscall_categories.memory {
+                        memory_category.insert("access_memory".to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    Ok(syscall_categories)
+}*/
