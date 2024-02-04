@@ -16,6 +16,7 @@ pub enum Error {
 
     #[error("No system call section")]
     NoSyscallSec,
+
 }
 /*impl From<capstone::Error> for Error {
     fn from(err: capstone::Error) -> Self {

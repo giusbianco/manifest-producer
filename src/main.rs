@@ -2,7 +2,7 @@ use manifest_producer::elf_analysis;
 mod error;
 
 fn main() {
-    let elf_file_path = "./binaries/debug-info/fake-firmware-c";
+    let elf_file_path = "./binaries/other-file/rust-code-analysis-cli";
     //let elf_file_path = "./binaries/stripped/fake-firmware-c";
 
     match elf_analysis(elf_file_path) {

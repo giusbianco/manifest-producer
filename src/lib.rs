@@ -74,8 +74,9 @@ pub fn elf_analysis(file_path: &str) -> Result<()> {
     // If not stripped, search for APIs
     if !stripped {
         // JOB1
-        dyn_manifest.api_found = Some(api_search(&elf));
-        st_manifest.api_found = Some(api_search(&elf)); 
+        let api_list = vec!["turnLampOn", "turnLampOff"];
+        dyn_manifest.api_found = Some(api_search(&elf, &api_list));
+        st_manifest.api_found = Some(api_search(&elf, &api_list)); 
     }
 
     // JOB2 with strace
@@ -114,6 +115,7 @@ pub fn arch_recovery<'a>(elf: &'a Elf<'a>) -> &'a str {
         goblin::elf::header::EM_X86_64 =>  "x86-64",
         goblin::elf::header::EM_386 =>  "x86",
         goblin::elf::header::EM_XTENSA =>  "Xtensa",
+        goblin::elf::header::EM_ARM => "ARM",
         _ =>  "Unknown",
     }
 }
@@ -151,8 +153,8 @@ fn get_function_name<'a>(elf: &'a Elf, symbol: &'a goblin::elf::Sym) -> Option<&
 }
 
 // Function to search for APIs in the symbol table
-pub fn api_search(elf: &Elf) -> Vec<String> {
-    let api_list = vec!["turnLampOn", "turnLampOff"];
+pub fn api_search(elf: &Elf, api_list: &Vec<&str>) -> Vec<String> {
+    //let api_list = vec!["turnLampOn", "turnLampOff"];
     let mut api_found = Vec::new();
     for symbol in elf.syms.iter() {
         if symbol.st_type() == goblin::elf::sym::STT_FUNC && symbol.st_shndx != 0 {
@@ -188,7 +190,7 @@ fn launch_strace(binary_path: &str) -> Result<()> {
     // Launch the strace command
     Command::new("strace")
         .arg("-o")
-        .arg("./binaries/strace_output.txt")
+        .arg("./strace_output.txt")
         .arg(binary_path)
         .output()?;
     
@@ -197,8 +199,9 @@ fn launch_strace(binary_path: &str) -> Result<()> {
 
 fn process_strace_output(syscall_categories: &mut SyscallFeatures) -> Result<()> {
     // Open the strace output file for reading
-    let file = std::fs::File::open("./binaries/strace_output.txt")?;
+    let file = std::fs::File::open("./strace_output.txt")?;
     let reader = BufReader::new(file);
+
     // Process each line in the strace output
     for line in reader.lines() {
         if let Ok(line) = line {
@@ -244,12 +247,24 @@ fn syscall_tracing(binary_path: &str) -> Result<SyscallFeatures> {
     Ok(syscall_categories)
 }
 
-
 /*
 *
 *   JOB2 - syscall table mapping strategy: syscall_mapping_table
 *
 */
+
+fn code_section<'a>(elf: &'a Elf<'a>) -> Result<&'a goblin::elf::section_header::SectionHeader> {
+    let code_section = elf
+    .section_headers
+    .iter()
+    .find(|header| 
+        header.sh_type == goblin::elf64::program_header::PT_LOAD && 
+        header.sh_flags & goblin::elf64::program_header::PF_X as u64 != 0
+    )
+    .ok_or(Error::NoSyscallSec)?;
+    
+    Ok(code_section)
+}
 
 fn process_syscalls(syscalls_data: &[u8], syscall_names: &Vec<(&str, c_int)>, syscall_categories: &mut SyscallFeatures) {
     // Iterate over each 4-byte entry in the system call section
@@ -262,14 +277,17 @@ fn process_syscalls(syscalls_data: &[u8], syscall_names: &Vec<(&str, c_int)>, sy
             syscall_entry[3],
         ]);
         // Look up the name of the system call in the table
-        if let Some(syscall_name) = syscall_names.iter().find(|(_, num)| *num == syscall_number as c_int) {
-            match syscall_name.0 {
-                "sys_write" | "sys_fsync" => insert_into_category(&mut syscall_categories.disk, syscall_name.0),
-                "send_data" | "recv_data" | "sys_socket" | "connection_attempt" => insert_into_category(&mut syscall_categories.network, syscall_name.0),
-                "I/O_control" => insert_into_category(&mut syscall_categories.device, syscall_name.0),
-                "access_memory" => insert_into_category(&mut syscall_categories.memory, syscall_name.0),
-                _ => {} // Ignore other system calls 
-            }
+        if let Some(syscall_name) = syscall_names
+            .iter()
+            .find(|(_, num)| *num == syscall_number as c_int) {
+
+                match syscall_name.0 {
+                    "write_disk" | "sys_fsync" => insert_into_category(&mut syscall_categories.disk, syscall_name.0),
+                    "send_data" | "recv_data" | "sys_socket" | "connection_attempt" => insert_into_category(&mut syscall_categories.network, syscall_name.0),
+                    "I/O_control" => insert_into_category(&mut syscall_categories.device, syscall_name.0),
+                    "access_memory" => insert_into_category(&mut syscall_categories.memory, syscall_name.0),
+                    _ => {} // Ignore other system calls 
+                }
         }
     }
 }
@@ -288,15 +306,14 @@ pub fn syscall_mapping_table(elf: &Elf, buffer: Vec<u8>) -> Result<SyscallFeatur
         // Add more system calls as needed
     ];
     let mut syscall_categories = SyscallFeatures::new();
+
     // Find the system call section (code section in this case)
-    let syscalls_section = elf
-        .section_headers
-        .iter()
-        .find(|section| elf.shdr_strtab.get_at(section.sh_name) == Some(".text"))
-        .ok_or_else(|| Error::NoSyscallSec)?;
+    let syscalls_section = code_section(elf)?;
+
     // Access the data in the system call section
     let syscalls_data = &buffer[syscalls_section.sh_offset as usize
         ..(syscalls_section.sh_offset + syscalls_section.sh_size) as usize];
+
     // Process each syscall entry and categorize them
     process_syscalls(syscalls_data, &syscall_names, &mut syscall_categories);
     Ok(syscall_categories)
@@ -317,12 +334,8 @@ pub fn syscall_pattern(elf: &Elf, elf_data: Vec<u8>) -> Result<()> {
         .mode(arch::x86::ArchMode::Mode64)
         .build()?;
 
-    // Find the .text section
-    let text_section = elf
-    .section_headers
-    .iter()
-    .find(|section| elf.shdr_strtab.get_at(section.sh_name) == Some(".text"))
-    .ok_or_else(|| Error::NoSyscallSec)?;
+    // Find code section
+    let text_section = code_section(elf)?;
 
     // Use the virtual address of the .text section as the starting address
     let start_address = text_section.sh_addr;
