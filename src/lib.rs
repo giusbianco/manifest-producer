@@ -1,3 +1,5 @@
+//use capstone::arch::{self, BuildsCapstone};
+//use capstone::Capstone;
 use goblin::elf::Elf;
 use std::fs::File;
 use std::process::Command;
@@ -50,6 +52,7 @@ impl SyscallFeatures {
 pub fn elf_analysis(file_path: &str) -> Result<()> {
     let elf_data = read_elf_file(file_path)?;
     let elf = Elf::parse(&elf_data)?;
+    
     // Retrieve the architecture from the ELF header
     let architecture = arch_recovery(&elf);
     if architecture == "Unknown" {
@@ -58,31 +61,38 @@ pub fn elf_analysis(file_path: &str) -> Result<()> {
         });
     }
     let stripped = is_stripped(&elf);
+    
     // Initialize the manifest
     let mut dyn_manifest = Manifest::new();
-    let mut st_manifest = Manifest::new();
     dyn_manifest.architecture = architecture.to_string();
-    st_manifest.architecture = architecture.to_string();
     dyn_manifest.stripped = stripped;
+
+    let mut st_manifest = Manifest::new();
+    st_manifest.architecture = architecture.to_string();
     st_manifest.stripped = stripped;
+
     // If not stripped, search for APIs
     if !stripped {
         // JOB1
         dyn_manifest.api_found = Some(api_search(&elf));
         st_manifest.api_found = Some(api_search(&elf)); 
     }
+
     // JOB2 with strace
     let syscall_categories = syscall_tracing(file_path)?;
     dyn_manifest.syscall_features = Some(syscall_categories);
+
     // JOB2 with the mapping table
     let syscall_categories = syscall_mapping_table(&elf, elf_data.clone())?;
     st_manifest.syscall_features = Some(syscall_categories);
-    // JOB2 with hex pattern
-    // TODO: code here!
+
+    // JOB2 with hex pattern - PSEUDO-code
+    // syscall_pattern(&elf, elf_data.clone())?;
 
     // Serialize the manifest to JSON and print it
     write_manifest_to_json(&dyn_manifest, "./dyn_manifest.json")?;
     write_manifest_to_json(&st_manifest, "./st_manifest.json")?;
+    
     Ok(())
 }
 /*
@@ -241,7 +251,7 @@ fn syscall_tracing(binary_path: &str) -> Result<SyscallFeatures> {
 *
 */
 
-fn process_syscalls( syscalls_data: &[u8], syscall_names: &Vec<(&str, c_int)>, syscall_categories: &mut SyscallFeatures) {
+fn process_syscalls(syscalls_data: &[u8], syscall_names: &Vec<(&str, c_int)>, syscall_categories: &mut SyscallFeatures) {
     // Iterate over each 4-byte entry in the system call section
     for syscall_entry in syscalls_data.chunks_exact(4) {
         // Extract the system call number from the 4-byte entry
@@ -294,11 +304,47 @@ pub fn syscall_mapping_table(elf: &Elf, buffer: Vec<u8>) -> Result<SyscallFeatur
 
 /*
 *
-*   JOB2 - pattern strategy: 
+*   JOB2 - pattern strategy PSEUDO-code
 *
-*/
 
-//TODO: function here
+// Define the system call patterns of interest
+const WRITE_PATTERN: &[u8] = &[0x0F, 0x05]; // This is an example pattern for syscall write on x86-64
+
+pub fn syscall_pattern(elf: &Elf, elf_data: Vec<u8>) -> Result<()> {
+    // Initialize Capstone for x86-64 architecture
+    let cs = Capstone::new()
+        .x86()
+        .mode(arch::x86::ArchMode::Mode64)
+        .build()?;
+
+    // Find the .text section
+    let text_section = elf
+    .section_headers
+    .iter()
+    .find(|section| elf.shdr_strtab.get_at(section.sh_name) == Some(".text"))
+    .ok_or_else(|| Error::NoSyscallSec)?;
+
+    // Use the virtual address of the .text section as the starting address
+    let start_address = text_section.sh_addr;
+    let end_address = text_section.sh_size;
+
+    let mut addr = start_address;
+    let syscall_patterns: HashSet<&[u8]> = vec![WRITE_PATTERN].into_iter().collect();
+
+    while addr < end_address {
+        let instr = cs.disasm_all(&elf_data[addr as usize..], addr)?;
+
+        for i in instr.as_ref() {
+            let instr_bytes = i.bytes();
+            if syscall_patterns.contains(instr_bytes) {
+                // Section in which the categorization of the system call is managed
+            }
+        }
+        addr += instr.len() as u64;
+    }
+
+    Ok(())
+}*/
 
 /*
 *
