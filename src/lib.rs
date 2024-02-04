@@ -63,36 +63,38 @@ pub fn elf_analysis(file_path: &str) -> Result<()> {
     let stripped = is_stripped(&elf);
     
     // Initialize the manifest
-    let mut dyn_manifest = Manifest::new();
-    dyn_manifest.architecture = architecture.to_string();
-    dyn_manifest.stripped = stripped;
-
     let mut st_manifest = Manifest::new();
     st_manifest.architecture = architecture.to_string();
     st_manifest.stripped = stripped;
+
+    let mut dyn_manifest = Manifest::new();
+    dyn_manifest.architecture = architecture.to_string();
+    dyn_manifest.stripped = stripped;
 
     // If not stripped, search for APIs
     if !stripped {
         // JOB1
         let api_list = vec!["turnLampOn", "turnLampOff"];
-        dyn_manifest.api_found = Some(api_search(&elf, &api_list));
         st_manifest.api_found = Some(api_search(&elf, &api_list)); 
+        dyn_manifest.api_found = Some(api_search(&elf, &api_list));
     }
-
-    // JOB2 with strace
-    let syscall_categories = syscall_tracing(file_path)?;
-    dyn_manifest.syscall_features = Some(syscall_categories);
 
     // JOB2 with the mapping table
     let syscall_categories = syscall_mapping_table(&elf, elf_data.clone())?;
     st_manifest.syscall_features = Some(syscall_categories);
 
+    // JOB2 with strace
+    let syscall_categories = syscall_tracing(file_path)?;
+    dyn_manifest.syscall_features = Some(syscall_categories);
+
+
+
     // JOB2 with hex pattern - PSEUDO-code
     // syscall_pattern(&elf, elf_data.clone())?;
 
     // Serialize the manifest to JSON and print it
-    write_manifest_to_json(&dyn_manifest, "./dyn_manifest.json")?;
     write_manifest_to_json(&st_manifest, "./st_manifest.json")?;
+    write_manifest_to_json(&dyn_manifest, "./dyn_manifest.json")?;
     
     Ok(())
 }
@@ -116,6 +118,7 @@ pub fn arch_recovery<'a>(elf: &'a Elf<'a>) -> &'a str {
         goblin::elf::header::EM_386 =>  "x86",
         goblin::elf::header::EM_XTENSA =>  "Xtensa",
         goblin::elf::header::EM_ARM => "ARM",
+        goblin::elf::header::EM_PPC => "PowerPC",
         _ =>  "Unknown",
     }
 }
