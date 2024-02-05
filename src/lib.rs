@@ -1,5 +1,3 @@
-//use capstone::arch::{self, BuildsCapstone};
-//use capstone::Capstone;
 use goblin::elf::Elf;
 use std::fs::File;
 use std::process::Command;
@@ -14,11 +12,11 @@ use error::{Error, Result};
 
 #[derive(Debug, Serialize)]
 pub struct Manifest {
-    architecture: String,
-    stripped: bool,
+    pub architecture: String,
+    pub stripped: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    api_found: Option<Vec<String>>,
-    syscall_features: Option<SyscallFeatures>,
+    pub api_found: Option<Vec<String>>,
+    pub syscall_features: Option<SyscallFeatures>,
 }
 impl Manifest {
     pub fn new() -> Self{
@@ -33,10 +31,10 @@ impl Manifest {
 
 #[derive(Debug, Serialize)]
 pub struct SyscallFeatures {
-    network: Option<HashSet<String>>,
-    device: Option<HashSet<String>>,
-    disk: Option<HashSet<String>>,
-    memory:Option<HashSet<String>>,
+    pub network: Option<HashSet<String>>,
+    pub device: Option<HashSet<String>>,
+    pub disk: Option<HashSet<String>>,
+    pub memory:Option<HashSet<String>>,
 }
 impl SyscallFeatures {
     pub fn new() -> Self {
@@ -49,17 +47,13 @@ impl SyscallFeatures {
     }
 }
 
-pub fn elf_analysis(file_path: &str) -> Result<()> {
+pub fn elf_analysis_with_mapping(file_path: &str) -> Result<()> {
     let elf_data = read_elf_file(file_path)?;
     let elf = Elf::parse(&elf_data)?;
     
     // Retrieve the architecture from the ELF header
-    let architecture = arch_recovery(&elf);
-    if architecture == "Unknown" {
-        return Err(Error::InvalidElf {
-            source: goblin::error::Error::Malformed("Unsupported architecture".to_string()),
-        });
-    }
+    let architecture = arch_recovery(&elf)?;
+    
     let stripped = is_stripped(&elf);
     
     // Initialize the manifest
@@ -67,6 +61,33 @@ pub fn elf_analysis(file_path: &str) -> Result<()> {
     st_manifest.architecture = architecture.to_string();
     st_manifest.stripped = stripped;
 
+    // If not stripped, search for APIs
+    if !stripped {
+        // JOB1
+         let api_list = vec!["turnLampOn", "turnLampOff"];
+         st_manifest.api_found = Some(api_search(&elf, &api_list)); 
+    }
+
+    // JOB2
+    let syscall_categories = syscall_mapping_table(&elf, elf_data.clone())?;
+    st_manifest.syscall_features = Some(syscall_categories);
+
+    // Serialize the manifest to JSON and print it
+    write_manifest_to_json(&st_manifest, "./st_manifest.json")?;
+    
+    Ok(())
+}
+
+pub fn elf_analysis_with_strace(file_path: &str) -> Result<()> {
+    let elf_data = read_elf_file(file_path)?;
+    let elf = Elf::parse(&elf_data)?;
+    
+    // Retrieve the architecture from the ELF header
+    let architecture = arch_recovery(&elf)?;
+    
+    let stripped = is_stripped(&elf);
+    
+    // Initialize the manifest
     let mut dyn_manifest = Manifest::new();
     dyn_manifest.architecture = architecture.to_string();
     dyn_manifest.stripped = stripped;
@@ -74,30 +95,20 @@ pub fn elf_analysis(file_path: &str) -> Result<()> {
     // If not stripped, search for APIs
     if !stripped {
         // JOB1
-        let api_list = vec!["turnLampOn", "turnLampOff"];
-        st_manifest.api_found = Some(api_search(&elf, &api_list)); 
-        dyn_manifest.api_found = Some(api_search(&elf, &api_list));
+         let api_list = vec!["turnLampOn", "turnLampOff"];
+         dyn_manifest.api_found = Some(api_search(&elf, &api_list));
     }
 
-    // JOB2 with the mapping table
-    let syscall_categories = syscall_mapping_table(&elf, elf_data.clone())?;
-    st_manifest.syscall_features = Some(syscall_categories);
-
-    // JOB2 with strace
+    // JOB2
     let syscall_categories = syscall_tracing(file_path)?;
     dyn_manifest.syscall_features = Some(syscall_categories);
 
-
-
-    // JOB2 with hex pattern - PSEUDO-code
-    // syscall_pattern(&elf, elf_data.clone())?;
-
     // Serialize the manifest to JSON and print it
-    write_manifest_to_json(&st_manifest, "./st_manifest.json")?;
     write_manifest_to_json(&dyn_manifest, "./dyn_manifest.json")?;
-    
+
     Ok(())
 }
+
 /*
 *
 *   PRE-JOB FUNCTIONS: arch_recovery, is_stripped, read_elf_file
@@ -112,14 +123,14 @@ pub fn read_elf_file(file_path: &str) -> Result<Vec<u8>> {
 }
 
 // Function for retrieving the architecture from the ELF file
-pub fn arch_recovery<'a>(elf: &'a Elf<'a>) -> &'a str {
+pub fn arch_recovery<'a>(elf: &'a Elf<'a>) -> Result<&'a str> {
     match elf.header.e_machine {
-        goblin::elf::header::EM_X86_64 =>  "x86-64",
-        goblin::elf::header::EM_386 =>  "x86",
-        goblin::elf::header::EM_XTENSA =>  "Xtensa",
-        goblin::elf::header::EM_ARM => "ARM",
-        goblin::elf::header::EM_PPC => "PowerPC",
-        _ =>  "Unknown",
+        goblin::elf::header::EM_X86_64 =>  Ok("x86-64"),
+        goblin::elf::header::EM_386 =>  Ok("x86"),
+        goblin::elf::header::EM_XTENSA =>  Ok("Xtensa"),
+        goblin::elf::header::EM_ARM => Ok("ARM"),
+        goblin::elf::header::EM_PPC => Ok("PowerPC"),
+        _ =>  Err(Error::InvalidElf { source: goblin::error::Error::Malformed("Unknown Architecture".to_string())}),
     }
 }
 
@@ -241,7 +252,7 @@ fn categorize_syscall<'a>(syscall: &'a str) -> Option<(&'a str, &'a str)> {
     }
 }
 
-fn syscall_tracing(binary_path: &str) -> Result<SyscallFeatures> {
+pub fn syscall_tracing(binary_path: &str) -> Result<SyscallFeatures> {
     let mut syscall_categories = SyscallFeatures::new();
     // Launch the strace command
     launch_strace(binary_path)?;
@@ -264,7 +275,7 @@ fn code_section<'a>(elf: &'a Elf<'a>) -> Result<&'a goblin::elf::section_header:
         header.sh_type == goblin::elf64::program_header::PT_LOAD && 
         header.sh_flags & goblin::elf64::program_header::PF_X as u64 != 0
     )
-    .ok_or(Error::NoSyscallSec)?;
+    .ok_or(Error::InvalidElf { source: goblin::error::Error::Malformed(format!("No Syscall Section found!")) })?;
     
     Ok(code_section)
 }
@@ -321,46 +332,6 @@ pub fn syscall_mapping_table(elf: &Elf, buffer: Vec<u8>) -> Result<SyscallFeatur
     process_syscalls(syscalls_data, &syscall_names, &mut syscall_categories);
     Ok(syscall_categories)
 }
-
-/*
-*
-*   JOB2 - pattern strategy PSEUDO-code
-*
-
-// Define the system call patterns of interest
-const WRITE_PATTERN: &[u8] = &[0x0F, 0x05]; // This is an example pattern for syscall write on x86-64
-
-pub fn syscall_pattern(elf: &Elf, elf_data: Vec<u8>) -> Result<()> {
-    // Initialize Capstone for x86-64 architecture
-    let cs = Capstone::new()
-        .x86()
-        .mode(arch::x86::ArchMode::Mode64)
-        .build()?;
-
-    // Find code section
-    let text_section = code_section(elf)?;
-
-    // Use the virtual address of the .text section as the starting address
-    let start_address = text_section.sh_addr;
-    let end_address = text_section.sh_size;
-
-    let mut addr = start_address;
-    let syscall_patterns: HashSet<&[u8]> = vec![WRITE_PATTERN].into_iter().collect();
-
-    while addr < end_address {
-        let instr = cs.disasm_all(&elf_data[addr as usize..], addr)?;
-
-        for i in instr.as_ref() {
-            let instr_bytes = i.bytes();
-            if syscall_patterns.contains(instr_bytes) {
-                // Section in which the categorization of the system call is managed
-            }
-        }
-        addr += instr.len() as u64;
-    }
-
-    Ok(())
-}*/
 
 /*
 *

@@ -1,18 +1,24 @@
-use manifest_producer::elf_analysis;
+use manifest_producer::{elf_analysis_with_mapping, elf_analysis_with_strace};
 mod error;
 
 fn main() {
-    let elf_file_path = "binaries/other-file/Inkscape-091e20e-x86_64.AppImage";
-    //let elf_file_path = "./binaries/stripped/fake-firmware-c";
+    let elf_file_path = "binaries/stripped/fake-firmware-c";
 
-    match elf_analysis(elf_file_path) {
+    match elf_analysis_with_mapping(elf_file_path) {
         Ok(_) => {
-            println!("Manifest created.");
-            println!("End of binary analysis.");
+            println!("Elf analysis succeded, using syscall mapping for job2.");
         }
         Err(error) => {
-            eprintln!("Error: {}", error);
+            eprintln!("Elf analysis failed: {}", error);
+        }
+    }
+
+    match elf_analysis_with_strace(elf_file_path) {
+        Ok(_) => {
+            println!("Elf analysis succeded, using strace for job2.");
+        }
+        Err(error) => {
+            eprintln!("Elf analysis failed: {}", error);
         }
     }
 }
-
